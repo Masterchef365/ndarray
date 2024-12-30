@@ -14,6 +14,7 @@ use alloc::vec::Vec;
 use rawpointer::PointerExt;
 use std::mem::{size_of, ManuallyDrop};
 
+use crate::dimension::check_do_slice;
 use crate::imp_prelude::*;
 
 use crate::argument_traits::AssignElem;
@@ -530,6 +531,52 @@ where
         info.multi_slice_move(self.view_mut())
     }
 
+    /// Determines if the given slice is possible.
+    pub fn bounds_check<I>(&self, info: I) -> Result<(), String>
+    where I: SliceArg<D>
+    {
+        if info.in_ndim() != self.ndim() {
+            return Err("The input dimension of `info` must match the array to be sliced.".into());
+        }
+        let out_ndim = info.out_ndim();
+        let mut new_dim = I::OutDim::zeros(out_ndim);
+        let mut new_strides = I::OutDim::zeros(out_ndim);
+
+        let mut old_axis = 0;
+        let mut new_axis = 0;
+        for ax_info in info.as_ref().iter() {
+            match ax_info {
+                SliceInfoElem::Slice { start, end, step } => {
+                    // Slice the axis in-place to update the `dim`, `strides`, and `ptr`.
+                    self.check_slice_axis_inplace(Axis(old_axis), Slice { start: *start, end: *end, step: *step })?;
+                    // Copy the sliced dim and stride to corresponding axis.
+                    new_dim[new_axis] = self.dim[old_axis];
+                    new_strides[new_axis] = self.strides[old_axis];
+                    old_axis += 1;
+                    new_axis += 1;
+                }
+                SliceInfoElem::Index(index) => {
+                    // Collapse the axis in-place to update the `ptr`.
+                    let i_usize = abs_index(self.len_of(Axis(old_axis)), *index);
+                    self.check_collapse_axis(Axis(old_axis), i_usize)?;
+                    // Skip copying the axis since it should be removed. Note that
+                    // removing this axis is safe because `.collapse_axis()` panics
+                    // if the index is out-of-bounds, so it will panic if the axis
+                    // is zero length.
+                    old_axis += 1;
+                }
+                SliceInfoElem::NewAxis => {
+                    // Set the dim and stride of the new axis.
+                    new_dim[new_axis] = 1;
+                    new_strides[new_axis] = 0;
+                    new_axis += 1;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
     /// Slice the array, possibly changing the number of dimensions.
     ///
     /// See [*Slicing*](#slicing) for full documentation.
@@ -658,6 +705,26 @@ where
         view_mut.slice_axis_inplace(axis, indices);
         view_mut
     }
+
+    /// Slice the array in place along the specified axis.
+    ///
+    /// **Panics** if an index is out of bounds or step size is zero.<br>
+    /// **Panics** if `axis` is out of bounds.
+    #[track_caller]
+    pub fn check_slice_axis_inplace(&self, axis: Axis, indices: Slice) -> Result<(), String>
+    {
+        let offset =
+            check_do_slice(self.dim.slice()[axis.index()], self.strides.slice()[axis.index()], indices)?;
+
+        let ptr = unsafe { self.ptr.offset(offset).as_ptr() as *const _ };
+
+        if !self.data._is_pointer_inbounds(ptr) {
+            Err("Index error".to_string())
+        } else {
+            Ok(())
+        }
+    }
+
 
     /// Slice the array in place along the specified axis.
     ///
@@ -1016,6 +1083,19 @@ where
         let strides = self.strides.remove_axis(axis);
         // safe because new dimension, strides allow access to a subset of old data
         unsafe { self.with_strides_dim(strides, dim) }
+    }
+
+    /// Selects `index` along the axis, collapsing the axis into length one.
+    pub fn check_collapse_axis(&self, axis: Axis, index: usize) -> Result<(), String>
+    {
+        let offset = dimension::check_do_collapse_axis(&self.dim, &self.strides, axis.index(), index)?;
+        let ptr = unsafe { self.ptr.offset(offset).as_ptr() as *const _ };
+
+        if !self.data._is_pointer_inbounds(ptr) {
+            Err("Index error".to_string())
+        } else {
+            Ok(())
+        }
     }
 
     /// Selects `index` along the axis, collapsing the axis into length one.

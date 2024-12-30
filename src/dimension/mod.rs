@@ -369,6 +369,30 @@ impl DimensionExt for [Ix]
 /// **Panics** if `index` is larger than the size of the axis
 #[track_caller]
 // FIXME: Move to Dimension trait
+pub fn check_do_collapse_axis<D: Dimension>(dims: &D, strides: &D, axis: usize, index: usize) -> Result<isize, String>
+{
+    let dim = dims.slice()[axis];
+    let stride = strides.slice()[axis];
+    if !(
+        index < dim) {
+        return Err(format!("collapse_axis: Index {} must be less than axis length {} for \
+         array with shape {:?}",
+        index,
+        dim,
+        *dims
+    ))}
+
+    //dims.slice_mut()[axis] = 1;
+    Ok(stride_offset(index, stride))
+}
+
+
+/// Collapse axis `axis` and shift so that only subarray `index` is
+/// available.
+///
+/// **Panics** if `index` is larger than the size of the axis
+#[track_caller]
+// FIXME: Move to Dimension trait
 pub fn do_collapse_axis<D: Dimension>(dims: &mut D, strides: &D, axis: usize, index: usize) -> isize
 {
     let dim = dims.slice()[axis];
@@ -395,6 +419,39 @@ pub fn abs_index(len: Ix, index: Ixs) -> Ix
         index as Ix
     }
 }
+
+/// Determines nonnegative start and end indices, and performs sanity checks.
+///
+/// The return value is (start, end, step).
+fn check_to_abs_slice(axis_len: usize, slice: Slice) -> Result<(usize, usize, isize), String>
+{
+    let Slice { start, end, step } = slice;
+    let start = abs_index(axis_len, start);
+    let mut end = abs_index(axis_len, end.unwrap_or(axis_len as isize));
+    if end < start {
+        end = start;
+    }
+    if !(
+        start <= axis_len) {
+        return Err(format!("Slice begin {} is past end of axis of length {}",
+        start,
+        axis_len,
+    )) };
+
+    if !(
+        end <= axis_len) {
+        return Err(format!("Slice end {} is past end of axis of length {}",
+        end,
+        axis_len,
+    )); }
+
+    if !(step != 0) {
+        return Err("Slice stride must not be zero".to_string());
+    }
+
+    Ok((start, end, step))
+}
+
 
 /// Determines nonnegative start and end indices, and performs sanity checks.
 ///
@@ -441,6 +498,42 @@ pub fn offset_from_low_addr_ptr_to_logical_ptr<D: Dimension>(dim: &D, strides: &
     debug_assert!(offset >= 0);
     offset as usize
 }
+
+/// Return data pointer offset or an error
+pub fn check_do_slice(dim: usize, stride: usize, slice: Slice) -> Result<isize, String>
+{
+    let (start, end, step) = check_to_abs_slice(dim, slice)?;
+
+    let m = end - start;
+
+    // Compute data pointer offset.
+    let offset = if m == 0 {
+        // In this case, the resulting array is empty, so we *can* avoid performing a nonzero
+        // offset.
+        //
+        // In two special cases (which are the true reason for this `m == 0` check), we *must* avoid
+        // the nonzero offset corresponding to the general case.
+        //
+        // * When `end == 0 && step < 0`. (These conditions imply that `m == 0` since `to_abs_slice`
+        //   ensures that `0 <= start <= end`.) We cannot execute `stride_offset(end - 1, stride)`
+        //   because the `end - 1` would underflow.
+        //
+        // * When `start == *dim && step > 0`. (These conditions imply that `m == 0` since
+        //   `to_abs_slice` ensures that `start <= end <= *dim`.) We cannot use the offset returned
+        //   by `stride_offset(start, stride)` because that would be past the end of the axis.
+        0
+    } else if step < 0 {
+        // When the step is negative, the new first element is `end - 1`, not `start`, since the
+        // direction is reversed.
+        stride_offset(end - 1, stride)
+    } else {
+        stride_offset(start, stride)
+    };
+
+    Ok(offset)
+}
+
+
 
 /// Modify dimension, stride and return data pointer offset
 ///
