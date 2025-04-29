@@ -420,14 +420,25 @@ pub fn abs_index(len: Ix, index: Ixs) -> Ix
     }
 }
 
+#[inline]
+pub fn check_abs_index(len: Ix, index: Ixs) -> Result<Ix, String>
+{
+    if index < 0 {
+        len.checked_sub(-index as Ix).ok_or_else(|| format!("Length was {len} but index was {index}"))
+    } else {
+        Ok(index as Ix)
+    }
+}
+
+
 /// Determines nonnegative start and end indices, and performs sanity checks.
 ///
 /// The return value is (start, end, step).
 fn check_to_abs_slice(axis_len: usize, slice: Slice) -> Result<(usize, usize, isize), String>
 {
     let Slice { start, end, step } = slice;
-    let start = abs_index(axis_len, start);
-    let mut end = abs_index(axis_len, end.unwrap_or(axis_len as isize));
+    let start = check_abs_index(axis_len, start)?;
+    let mut end = check_abs_index(axis_len, end.unwrap_or(axis_len as isize))?;
     if end < start {
         end = start;
     }

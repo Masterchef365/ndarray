@@ -14,6 +14,7 @@ use alloc::vec::Vec;
 use rawpointer::PointerExt;
 use std::mem::{size_of, ManuallyDrop};
 
+use crate::dimension::check_abs_index;
 use crate::dimension::check_do_slice;
 use crate::imp_prelude::*;
 
@@ -557,7 +558,7 @@ where
                 }
                 SliceInfoElem::Index(index) => {
                     // Collapse the axis in-place to update the `ptr`.
-                    let i_usize = abs_index(self.len_of(Axis(old_axis)), *index);
+                    let i_usize = check_abs_index(self.len_of(Axis(old_axis)), *index)?;
                     self.check_collapse_axis(Axis(old_axis), i_usize)?;
                     // Skip copying the axis since it should be removed. Note that
                     // removing this axis is safe because `.collapse_axis()` panics
